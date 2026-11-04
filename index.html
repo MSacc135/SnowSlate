@@ -12,11 +12,8 @@
     <meta name="application-name" content="SnowSlate">
     <meta name="theme-color" content="#0F172A">
 
-    <!-- Validated 192x192 and 512x512 PWA Icons for Reliable Android/iOS Installation -->
-    <link rel="apple-touch-icon" href="./SnowSlate Image.png">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2530/2530068.png">
     <link rel="icon" type="image/png" href="https://cdn-icons-png.flaticon.com/512/2530/2530068.png">
-
-    <!-- Robust Manifest for Android & Desktop PWA Installation -->
     <link rel="manifest" href="./manifest.json">
 
     <!-- Tailwind CSS CDN -->
@@ -24,7 +21,7 @@
     <!-- React & ReactDOM 18 -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-    <!-- Babel Standalone for JSX -->
+    <!-- Babel Standalone -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
     <script>
@@ -88,17 +85,6 @@
             color: #FFFFFF !important;
             border-color: #000000 !important;
         }
-        body.solar-mode .solar-accent-text {
-            color: #0284C7 !important;
-            font-weight: 800 !important;
-        }
-        body.solar-mode .solar-accent-bg {
-            background-color: #0284C7 !important;
-            color: #FFFFFF !important;
-        }
-        body.solar-mode .solar-border {
-            border-color: #000000 !important;
-        }
         body.solar-mode svg {
             background-color: #FFFFFF !important;
             border-color: #000000 !important;
@@ -116,13 +102,15 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useMemo } = React;
 
         function App() {
             const [activeTab, setActiveTab] = useState('gen_obs');
             const [colorPalette, setColorPalette] = useState('dim');
             
-            const [obs, setObs] = useState({
+            const createInitialObsState = () => ({
+                id: Date.now().toString(),
+                createdAt: new Date().toISOString(),
                 locationName: '',
                 observerName: '',
                 elevation: '',
@@ -130,6 +118,10 @@
                 slopeAngle: '',
                 lat: 0,
                 lng: 0,
+                pitLat: 0,
+                pitLng: 0,
+                pitElevation: '',
+                pitSlopeAngle: '',
                 totalSnowDepth: '',
                 generalNotes: '',
                 photos: [],
@@ -155,12 +147,33 @@
                 pstTests: [],
                 snowTemps: []
             });
+
+            const [obs, setObs] = useState(createInitialObsState);
             const [savedLogbook, setSavedLogbook] = useState([]);
             const [statusMsg, setStatusMsg] = useState('');
             const [isRecording, setIsRecording] = useState(false);
+            const [isDictatingLayers, setIsDictatingLayers] = useState(false);
             const [isFetchingGps, setIsFetchingGps] = useState(false);
+            const [isFetchingPitGps, setIsFetchingPitGps] = useState(false);
             const [showPstSection, setShowPstSection] = useState(false);
             const [showTempSection, setShowTempSection] = useState(false);
+
+            // Logbook Grouping, Search, and Filtering States
+            const [searchQuery, setSearchQuery] = useState('');
+            const [groupBy, setGroupBy] = useState('date');
+            const [filterTag, setFilterTag] = useState('all');
+            const [selectedReportModal, setSelectedReportModal] = useState(null);
+
+            useEffect(() => {
+                const storedLogs = localStorage.getItem('snowslate_logbook');
+                if (storedLogs) {
+                    try {
+                        setSavedLogbook(JSON.parse(storedLogs));
+                    } catch (e) {
+                        console.error('Failed to parse logbook from localStorage', e);
+                    }
+                }
+            }, []);
 
             useEffect(() => {
                 if (colorPalette === 'bright') {
@@ -170,9 +183,12 @@
                 }
             }, [colorPalette]);
 
-            const hardnessLevels = ['F', '4F', '1F', 'P', 'K', 'I'];
-            const hardnessMap = { 'F': 1, '4F': 2, '1F': 3, 'P': 4, 'K': 5, 'I': 6 };
+            const saveLogbookToStorage = (newLogs) => {
+                setSavedLogbook(newLogs);
+                localStorage.setItem('snowslate_logbook', JSON.stringify(newLogs));
+            };
 
+            const hardnessLevels = ['F', '4F', '1F', 'P', 'K', 'I'];
             const grainTypesList = [
                 { code: 'PP', name: 'New Snow', symbol: '+' },
                 { code: 'PPgp', name: 'Graupel', symbol: '✼' },
@@ -214,13 +230,8 @@
                             elevation: elevationFeet
                         }));
                         setIsFetchingGps(false);
-                        
-                        if (hasAltitude) {
-                            setStatusMsg('GPS & Elevation acquired!');
-                        } else {
-                            setStatusMsg('GPS acquired (Elevation sensor unavailable)');
-                        }
-                        setTimeout(() => setStatusMsg(''), 4000);
+                        setStatusMsg(hasAltitude ? 'General GPS & Elevation acquired!' : 'General GPS acquired');
+                        setTimeout(() => setStatusMsg(''), 3000);
                     },
                     (error) => {
                         setIsFetchingGps(false);
@@ -228,6 +239,79 @@
                     },
                     { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
                 );
+            };
+
+            const fetchPitGpsLocation = () => {
+                if (!navigator.geolocation) {
+                    alert('Geolocation is not supported by your browser.');
+                    return;
+                }
+                setIsFetchingPitGps(true);
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        const { latitude, longitude, altitude } = position.coords;
+                        const hasAltitude = altitude !== null && altitude !== undefined && !isNaN(altitude);
+                        const pitElevationFeet = hasAltitude ? Math.round(altitude * 3.28084).toString() : obs.pitElevation;
+
+                        setObs(prev => ({
+                            ...prev,
+                            pitLat: latitude,
+                            pitLng: longitude,
+                            pitElevation: pitElevationFeet
+                        }));
+                        setIsFetchingPitGps(false);
+                        setStatusMsg(hasAltitude ? 'Pit GPS & Elevation acquired!' : 'Pit GPS acquired');
+                        setTimeout(() => setStatusMsg(''), 3000);
+                    },
+                    (error) => {
+                        setIsFetchingPitGps(false);
+                        alert(`Unable to retrieve pit GPS location: ${error.message}`);
+                    },
+                    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+                );
+            };
+
+            const captureSlopeFromSensor = (field = 'slopeAngle') => {
+                if (typeof window.DeviceOrientationEvent === 'undefined') {
+                    alert('Device orientation sensors are not supported on this device/browser.');
+                    return;
+                }
+
+                const readOrientation = (event) => {
+                    if (event.beta === null || event.beta === undefined) {
+                        alert('Unable to read orientation data from device.');
+                        window.removeEventListener('deviceorientation', readOrientation);
+                        return;
+                    }
+                    let slope = Math.round(Math.abs(event.beta));
+                    if (slope > 90) slope = 180 - slope;
+
+                    setObs(prev => ({
+                        ...prev,
+                        [field]: slope.toString()
+                    }));
+
+                    setStatusMsg(`Slope angle (${slope}°) captured from sensor!`);
+                    setTimeout(() => setStatusMsg(''), 3000);
+                    window.removeEventListener('deviceorientation', readOrientation);
+                };
+
+                if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+                    DeviceOrientationEvent.requestPermission()
+                        .then(response => {
+                            if (response === 'granted') {
+                                window.addEventListener('deviceorientation', readOrientation);
+                            } else {
+                                alert('Sensor permission denied.');
+                            }
+                        })
+                        .catch(err => {
+                            console.error(err);
+                            alert('Error requesting sensor permission.');
+                        });
+                } else {
+                    window.addEventListener('deviceorientation', readOrientation);
+                }
             };
 
             const recordAvalancheGps = (avalancheId) => {
@@ -326,7 +410,7 @@
             const startVoiceDictation = () => {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
                 if (!SpeechRecognition) {
-                    alert("Speech recognition is not supported in this browser. You can use your mobile keyboard's built-in microphone button or type directly.");
+                    alert("Speech recognition is not supported in this browser.");
                     return;
                 }
                 const recognition = new SpeechRecognition();
@@ -343,6 +427,105 @@
                         ...prev,
                         generalNotes: prev.generalNotes ? prev.generalNotes + ' ' + transcript : transcript
                     }));
+                };
+                recognition.start();
+            };
+
+            const parseAudioToLayers = (transcript) => {
+                const text = transcript.toLowerCase();
+                const newLayers = [];
+
+                const numberWords = { zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10, twenty:20, thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90, hundred:100 };
+                
+                let cleanText = text;
+                Object.keys(numberWords).forEach(word => {
+                    cleanText = cleanText.replace(new RegExp(`\\b${word}\\b`, 'g'), numberWords[word]);
+                });
+
+                const sentences = cleanText.split(/(?:\.|\n|layer)+/).filter(s => s.trim().length > 0);
+
+                sentences.forEach(sentence => {
+                    const depthMatch = sentence.match(/(\d+)\s*(?:to|-)\s*(\d+)/i);
+                    let top = depthMatch ? parseInt(depthMatch[1], 10) : null;
+                    let bottom = depthMatch ? parseInt(depthMatch[2], 10) : null;
+
+                    if (top === null && bottom === null) {
+                        const singleDepth = sentence.match(/(\d+)\s*(?:cm|centimeters)/i);
+                        if (singleDepth) {
+                            top = newLayers.length > 0 ? newLayers[newLayers.length - 1].bottomDepth : 0;
+                            bottom = parseInt(singleDepth[1], 10);
+                        }
+                    }
+
+                    if (top !== null && bottom !== null) {
+                        let hardness = 'F';
+                        if (sentence.includes('four finger') || sentence.includes('4f') || sentence.includes('4 finger')) hardness = '4F';
+                        else if (sentence.includes('one finger') || sentence.includes('1f') || sentence.includes('1 finger')) hardness = '1F';
+                        else if (sentence.includes('pencil') || sentence.includes(' p ')) hardness = 'P';
+                        else if (sentence.includes('knife') || sentence.includes(' k ')) hardness = 'K';
+                        else if (sentence.includes('ice') || sentence.includes(' i ')) hardness = 'I';
+                        else if (sentence.includes('fist') || sentence.includes(' f ')) hardness = 'F';
+
+                        let grainType = '';
+                        if (sentence.includes('graupel')) grainType = 'PPgp';
+                        else if (sentence.includes('decomposing')) grainType = 'DF';
+                        else if (sentence.includes('rounds to facets')) grainType = 'RGxf';
+                        else if (sentence.includes('facets to rounds')) grainType = 'FCxr';
+                        else if (sentence.includes('near surface') || sentence.includes('surface facets')) grainType = 'FCsf';
+                        else if (sentence.includes('rounds') || sentence.includes('rounded')) grainType = 'RG';
+                        else if (sentence.includes('facets') || sentence.includes('faceted')) grainType = 'FC';
+                        else if (sentence.includes('surface hoar')) grainType = 'SH';
+                        else if (sentence.includes('depth hoar')) grainType = 'DH';
+                        else if (sentence.includes('melt freeze') || sentence.includes('crust')) grainType = 'MFcr';
+                        else if (sentence.includes('melt') || sentence.includes('moist')) grainType = 'MF';
+                        else if (sentence.includes('new snow') || sentence.includes('fresh')) grainType = 'PP';
+
+                        const sizeMatch = sentence.match(/(\d+(?:\.\d+)?)\s*(?:mm|millimeter|millimeters)/i);
+                        const grainSize = sizeMatch ? sizeMatch[1] : '1.0';
+
+                        const testMatch = sentence.match(/(ct[l|m|h]?\s*\d+|ect[p|n]?\s*\d+|pst\s*\d+\/\d+)/i);
+                        const stabilityTest = testMatch ? testMatch[0].toUpperCase() : '';
+
+                        newLayers.push({
+                            id: Date.now().toString() + Math.random().toString(36).substr(2, 4),
+                            topDepth: top,
+                            bottomDepth: bottom,
+                            hardness,
+                            grainType,
+                            grainSize,
+                            stabilityTest
+                        });
+                    }
+                });
+
+                if (newLayers.length > 0) {
+                    setObs(prev => ({
+                        ...prev,
+                        layers: [...prev.layers, ...newLayers]
+                    }));
+                    setStatusMsg(`Added ${newLayers.length} layer(s) from voice!`);
+                    setTimeout(() => setStatusMsg(''), 3000);
+                } else {
+                    alert(`Could not detect layer structure. Spoken phrase: "${transcript}".`);
+                }
+            };
+
+            const startLayerVoiceDictation = () => {
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SpeechRecognition) {
+                    alert("Speech recognition is not supported in this browser.");
+                    return;
+                }
+                const recognition = new SpeechRecognition();
+                recognition.continuous = false;
+                recognition.interimResults = false;
+                recognition.lang = 'en-US';
+
+                recognition.onstart = () => setIsDictatingLayers(true);
+                recognition.onend = () => setIsDictatingLayers(false);
+                recognition.onerror = () => setIsDictatingLayers(false);
+                recognition.onresult = (event) => {
+                    parseAudioToLayers(event.results[0][0].transcript);
                 };
                 recognition.start();
             };
@@ -406,9 +589,47 @@
             };
 
             const saveRecord = () => {
-                setSavedLogbook(prev => [obs, ...prev]);
-                setStatusMsg('Record saved to SnowSlate logbook!');
+                const updatedObs = {
+                    ...obs,
+                    id: obs.id || Date.now().toString(),
+                    createdAt: obs.createdAt || new Date().toISOString()
+                };
+                const existingIdx = savedLogbook.findIndex(item => item.id === updatedObs.id);
+                let newLogs;
+                if (existingIdx >= 0) {
+                    newLogs = [...savedLogbook];
+                    newLogs[existingIdx] = updatedObs;
+                } else {
+                    newLogs = [updatedObs, ...savedLogbook];
+                }
+                saveLogbookToStorage(newLogs);
+                setStatusMsg('Record saved to Logbook!');
                 setTimeout(() => setStatusMsg(''), 3000);
+            };
+
+            const deleteRecord = (id) => {
+                if (confirm('Are you sure you want to delete this observation log?')) {
+                    const newLogs = savedLogbook.filter(item => item.id !== id);
+                    saveLogbookToStorage(newLogs);
+                    if (selectedReportModal?.id === id) setSelectedReportModal(null);
+                    setStatusMsg('Observation deleted.');
+                    setTimeout(() => setStatusMsg(''), 2500);
+                }
+            };
+
+            const loadRecordToActiveSession = (record) => {
+                setObs(JSON.parse(JSON.stringify(record)));
+                setSelectedReportModal(null);
+                setActiveTab('gen_obs');
+                setStatusMsg('Loaded observation into active workspace');
+                setTimeout(() => setStatusMsg(''), 3000);
+            };
+
+            const createNewSession = () => {
+                setObs(createInitialObsState());
+                setActiveTab('gen_obs');
+                setStatusMsg('Started new observation session');
+                setTimeout(() => setStatusMsg(''), 2500);
             };
 
             const exportCAAML = () => {
@@ -422,7 +643,17 @@
             };
 
             const exportGPX = () => {
-                const gpx = `<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1"><wpt lat="${obs.lat}" lon="${obs.lng}"><name>${obs.locationName || 'SnowSlate Waypoint'}</name><ele>${obs.elevation || '0'}</ele></wpt></gpx>`;
+                let wpts = '';
+                if (obs.lat !== 0 || obs.lng !== 0) {
+                    wpts += `<wpt lat="${obs.lat}" lon="${obs.lng}"><name>${(obs.locationName || 'Observation') + ' (General)'}</name><ele>${obs.elevation || '0'}</ele></wpt>`;
+                }
+                if (obs.pitLat !== 0 || obs.pitLng !== 0) {
+                    wpts += `<wpt lat="${obs.pitLat}" lon="${obs.pitLng}"><name>${(obs.locationName || 'Snow Pit') + ' (Pit Site)'}</name><ele>${obs.pitElevation || obs.elevation || '0'}</ele></wpt>`;
+                }
+                if (!wpts) {
+                    wpts = `<wpt lat="0" lon="0"><name>${obs.locationName || 'SnowSlate Waypoint'}</name><ele>0</ele></wpt>`;
+                }
+                const gpx = `<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1">${wpts}</gpx>`;
                 const blob = new Blob([gpx], { type: 'application/gpx+xml' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a'); 
@@ -430,6 +661,52 @@
                 a.download = `${(obs.locationName || 'SnowSlate_Waypoint').replace(/\s+/g, '_')}.gpx`; 
                 a.click();
             };
+
+            const exportLogbookJSON = () => {
+                const jsonStr = JSON.stringify(savedLogbook, null, 2);
+                const blob = new Blob([jsonStr], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `SnowSlate_Logbook_Backup_${new Date().toISOString().slice(0,10)}.json`;
+                a.click();
+            };
+
+            // Logbook Search & Grouping Logic
+            const filteredLogbook = useMemo(() => {
+                return savedLogbook.filter(item => {
+                    const matchesSearch = 
+                        (item.locationName || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        (item.observerName || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        (item.generalNotes || '').toLowerCase().includes(searchQuery.toLowerCase());
+
+                    if (!matchesSearch) return false;
+                    if (filterTag === 'avalanches') return item.instability?.recentAvalanches && item.instability.avalanches?.length > 0;
+                    if (filterTag === 'cracking') return item.instability?.cracking;
+                    if (filterTag === 'collapsing') return item.instability?.collapsing;
+                    if (filterTag === 'wind') return item.instability?.windLoading;
+                    return true;
+                });
+            }, [savedLogbook, searchQuery, filterTag]);
+
+            const groupedLogbook = useMemo(() => {
+                const groups = {};
+                filteredLogbook.forEach(item => {
+                    let key = 'Unassigned';
+                    if (groupBy === 'date') {
+                        key = item.createdAt ? new Date(item.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : 'Unknown Date';
+                    } else if (groupBy === 'location') {
+                        key = item.locationName ? item.locationName.trim() : 'Unnamed Location';
+                    } else if (groupBy === 'observer') {
+                        key = item.observerName ? item.observerName.trim() : 'Unknown Observer';
+                    } else if (groupBy === 'aspect') {
+                        key = item.aspect ? `Aspect: ${item.aspect}` : 'Aspect: Unspecified';
+                    }
+                    if (!groups[key]) groups[key] = [];
+                    groups[key].push(item);
+                });
+                return groups;
+            }, [filteredLogbook, groupBy]);
 
             const maxBottomDepth = obs.layers.length > 0 ? Math.max(...obs.layers.map(l => Number(l.bottomDepth) || 0)) : 100;
             const enteredHs = Number(obs.totalSnowDepth) || 0;
@@ -446,11 +723,9 @@
             const colWidth = plotWidth / 6;
 
             const getY = (depth) => (topPadding + plotHeight) - (depth / totalDepth) * plotHeight;
-            
             const getHardnessX = (h) => {
                 const idx = hardnessLevels.indexOf(h);
-                if (idx === -1) return leftPadding + colWidth;
-                return leftPadding + (idx + 1) * colWidth;
+                return leftPadding + (idx === -1 ? 1 : idx + 1) * colWidth;
             };
 
             const getTempX = (tVal) => {
@@ -461,9 +736,7 @@
 
             const depthStep = totalDepth > 150 ? 50 : 25;
             const depthTicks = [];
-            for (let d = 0; d <= totalDepth; d += depthStep) {
-                depthTicks.push(d);
-            }
+            for (let d = 0; d <= totalDepth; d += depthStep) depthTicks.push(d);
 
             const isBright = colorPalette === 'bright';
             const cardBgClass = isBright ? 'bg-white border-2 border-black text-black solar-card' : 'bg-[#1C2541] border border-[#3A506B] text-slate-100';
@@ -477,7 +750,7 @@
                         <div className="flex items-center justify-between w-full lg:w-auto gap-3">
                             <div className="flex items-center gap-2.5">
                                 <div className="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-400 flex items-center justify-center shadow-inner overflow-hidden shrink-0">
-                                    <svg className="w-6 h-6 text-cyan-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <svg className="w-6 h-6 text-cyan-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                         <rect x="4" y="3" width="16" height="18" rx="2" strokeWidth="2"/>
                                         <line x1="8" y1="7" x2="8" y2="7.01"/>
                                         <line x1="8" y1="11" x2="8" y2="11.01"/>
@@ -491,16 +764,11 @@
                             </div>
                             
                             <div className="flex items-center gap-2 lg:hidden">
-                                <button 
-                                    onClick={togglePalette}
-                                    className={`px-2.5 py-1 rounded text-xs font-bold transition flex items-center gap-1 border ${isBright ? 'bg-amber-400 text-black border-black' : 'bg-slate-800 text-amber-300 border-amber-400/50'}`}
-                                >
-                                    {isBright ? '☀️ Bright Sun' : '☁️ Dim / Night'}
+                                <button onClick={togglePalette} className={`px-2 py-1 rounded text-xs font-bold border ${isBright ? 'bg-amber-400 text-black border-black' : 'bg-slate-800 text-amber-300 border-amber-400/50'}`}>
+                                    {isBright ? '☀️ Bright' : '☁️ Dim'}
                                 </button>
                                 {statusMsg && <span className="text-[10px] bg-cyan-950 text-cyan-300 px-2 py-0.5 rounded border border-cyan-700">{statusMsg}</span>}
-                                <button onClick={saveRecord} className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-3 py-1 rounded text-xs shadow transition">
-                                    💾 Save
-                                </button>
+                                <button onClick={saveRecord} className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-3 py-1 rounded text-xs shadow">💾 Save</button>
                             </div>
                         </div>
 
@@ -508,7 +776,7 @@
                             {[
                                 { id: 'gen_obs', label: 'General Obs', icon: '📝' },
                                 { id: 'pit_profile', label: 'Pit Profile', icon: '🏔️' },
-                                { id: 'export', label: 'GIS & CAAML Export', icon: '📦' },
+                                { id: 'export', label: 'GIS & Export', icon: '📦' },
                                 { id: 'logbook', label: `Logbook (${savedLogbook.length})`, icon: '📖' }
                             ].map(tab => (
                                 <button
@@ -522,15 +790,15 @@
                             ))}
                         </nav>
 
-                        <div className="hidden lg:flex items-center gap-3 shrink-0">
-                            <button 
-                                onClick={togglePalette}
-                                className={`px-3 py-1 rounded text-xs font-bold transition flex items-center gap-1.5 border shadow ${isBright ? 'bg-amber-400 hover:bg-amber-300 text-black border-black' : 'bg-[#1C2541] hover:bg-slate-800 text-amber-300 border-amber-400/40'}`}
-                            >
-                                <span>{isBright ? '☀️ High-Contrast Sun Mode' : '☁️ Dim / Headlamp Mode'}</span>
+                        <div className="hidden lg:flex items-center gap-2 shrink-0">
+                            <button onClick={createNewSession} className="bg-slate-800 hover:bg-slate-700 text-cyan-400 border border-slate-700 px-3 py-1.5 rounded text-xs font-bold transition">
+                                ➕ New Session
+                            </button>
+                            <button onClick={togglePalette} className={`px-3 py-1 rounded text-xs font-bold border shadow ${isBright ? 'bg-amber-400 text-black border-black' : 'bg-[#1C2541] text-amber-300 border-amber-400/40'}`}>
+                                {isBright ? '☀️ High-Contrast Sun Mode' : '☁️ Dim / Night Mode'}
                             </button>
                             {statusMsg && <span className="text-xs bg-cyan-950 text-cyan-300 px-2.5 py-1 rounded border border-cyan-700">{statusMsg}</span>}
-                            <button onClick={saveRecord} className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-4 py-1.5 rounded text-xs flex items-center gap-1.5 shadow transition">
+                            <button onClick={saveRecord} className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-4 py-1.5 rounded text-xs shadow transition">
                                 💾 Save Record
                             </button>
                         </div>
@@ -540,77 +808,55 @@
                         
                         {activeTab === 'gen_obs' && (
                             <div className="space-y-5">
+                                {/* Site Information Box with General GPS Button */}
                                 <div className={`${cardBgClass} p-3.5 sm:p-4 rounded-xl space-y-3.5`}>
-                                    <h2 className={headerAccentClass}>📍 Site Information</h2>
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2.5 border-b border-[#3A506B] pb-2.5 solar-border">
+                                        <h2 className={headerAccentClass}>📍 Site Information</h2>
+                                        <button
+                                            type="button"
+                                            onClick={fetchGpsLocation}
+                                            disabled={isFetchingGps}
+                                            className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-3.5 py-1.5 rounded-lg text-xs shadow flex items-center gap-1.5 transition shrink-0"
+                                        >
+                                            {isFetchingGps ? '⏳ Acquiring General GPS...' : '📍 Record General GPS & Elevation'}
+                                        </button>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                                         <div>
-                                            <label className={`text-[10px] font-medium uppercase tracking-wider block mb-1 ${isBright ? 'text-black' : 'text-slate-300'}`}>Location Name</label>
-                                            <input 
-                                                type="text" 
-                                                value={obs.locationName} 
-                                                onChange={e => setObs({...obs, locationName: e.target.value})}
-                                                placeholder="e.g. Castle Peak N Ridge"
-                                                className={`w-full rounded-lg p-2 text-xs sm:text-sm focus:outline-none ${inputBgClass}`}
-                                            />
+                                            <label className="text-[10px] font-medium uppercase tracking-wider block mb-1">Location Name</label>
+                                            <input type="text" value={obs.locationName} onChange={e => setObs({...obs, locationName: e.target.value})} placeholder="e.g. Castle Peak N Ridge" className={`w-full rounded-lg p-2 text-xs sm:text-sm focus:outline-none ${inputBgClass}`} />
                                         </div>
                                         <div>
-                                            <label className={`text-[10px] font-medium uppercase tracking-wider block mb-1 ${isBright ? 'text-black' : 'text-slate-300'}`}>Observer</label>
-                                            <input 
-                                                type="text" 
-                                                value={obs.observerName} 
-                                                onChange={e => setObs({...obs, observerName: e.target.value})}
-                                                placeholder="Observer Name"
-                                                className={`w-full rounded-lg p-2 text-xs sm:text-sm focus:outline-none ${inputBgClass}`}
-                                            />
+                                            <label className="text-[10px] font-medium uppercase tracking-wider block mb-1">Observer</label>
+                                            <input type="text" value={obs.observerName} onChange={e => setObs({...obs, observerName: e.target.value})} placeholder="Observer Name" className={`w-full rounded-lg p-2 text-xs sm:text-sm focus:outline-none ${inputBgClass}`} />
                                         </div>
                                     </div>
                                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                                         <div>
-                                            <label className={`text-[10px] font-medium uppercase tracking-wider block mb-1 ${isBright ? 'text-black' : 'text-slate-300'}`}>Elev (ft)</label>
-                                            <input 
-                                                type="number" 
-                                                value={obs.elevation} 
-                                                onChange={e => setObs({...obs, elevation: e.target.value})}
-                                                placeholder="e.g. 9500"
-                                                className={`w-full rounded-lg p-2 text-xs sm:text-sm focus:outline-none ${inputBgClass}`}
-                                            />
+                                            <label className="text-[10px] font-medium uppercase tracking-wider block mb-1">Elev (ft)</label>
+                                            <input type="number" value={obs.elevation} onChange={e => setObs({...obs, elevation: e.target.value})} placeholder="e.g. 9500" className={`w-full rounded-lg p-2 text-xs sm:text-sm focus:outline-none ${inputBgClass}`} />
                                         </div>
                                         <div>
-                                            <label className={`text-[10px] font-medium uppercase tracking-wider block mb-1 ${isBright ? 'text-black' : 'text-slate-300'}`}>Aspect</label>
-                                            <select 
-                                                value={obs.aspect} 
-                                                onChange={e => setObs({...obs, aspect: e.target.value})}
-                                                className={`w-full rounded-lg p-2 text-xs sm:text-sm focus:outline-none ${inputBgClass}`}
-                                            >
+                                            <label className="text-[10px] font-medium uppercase tracking-wider block mb-1">Aspect</label>
+                                            <select value={obs.aspect} onChange={e => setObs({...obs, aspect: e.target.value})} className={`w-full rounded-lg p-2 text-xs sm:text-sm focus:outline-none ${inputBgClass}`}>
                                                 {['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'].map(d => <option key={d} value={d}>{d}</option>)}
                                             </select>
                                         </div>
                                         <div>
-                                            <label className={`text-[10px] font-medium uppercase tracking-wider block mb-1 ${isBright ? 'text-black' : 'text-slate-300'}`}>Slope (°)</label>
-                                            <input 
-                                                type="number" 
-                                                value={obs.slopeAngle} 
-                                                onChange={e => setObs({...obs, slopeAngle: e.target.value})}
-                                                placeholder="e.g. 34"
-                                                className={`w-full rounded-lg p-2 text-xs sm:text-sm focus:outline-none ${inputBgClass}`}
-                                            />
+                                            <label className="text-[10px] font-medium uppercase tracking-wider block mb-1">Slope (°)</label>
+                                            <div className="flex gap-1.5">
+                                                <input type="number" value={obs.slopeAngle} onChange={e => setObs({...obs, slopeAngle: e.target.value})} placeholder="e.g. 34" className={`w-full rounded-lg p-2 text-xs sm:text-sm focus:outline-none ${inputBgClass}`} />
+                                                <button type="button" onClick={() => captureSlopeFromSensor('slopeAngle')} title="Measure Slope with Sensor" className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-2.5 py-1 rounded-lg text-xs shadow shrink-0 flex items-center justify-center">
+                                                    📐
+                                                </button>
+                                            </div>
                                         </div>
                                         <div>
-                                            <label className={`text-[10px] font-medium uppercase tracking-wider block mb-1 ${isBright ? 'text-black' : 'text-slate-300'}`}>Coordinates</label>
-                                            <button
-                                                type="button"
-                                                onClick={fetchGpsLocation}
-                                                disabled={isFetchingGps}
-                                                className={`w-full rounded-lg p-2 text-[11px] sm:text-xs font-mono flex items-center justify-center gap-1 transition shadow truncate ${isBright ? 'bg-black text-white border-black font-bold' : 'bg-[#0B132B] hover:bg-slate-900 border border-[#3A506B] text-cyan-400'}`}
-                                            >
-                                                {isFetchingGps ? (
-                                                    <span>⏳ Acquiring...</span>
-                                                ) : obs.lat !== 0 || obs.lng !== 0 ? (
-                                                    <span>📍 {obs.lat.toFixed(4)}, {obs.lng.toFixed(4)}</span>
-                                                ) : (
-                                                    <span>📍 Record GPS</span>
-                                                )}
-                                            </button>
+                                            <label className="text-[10px] font-medium uppercase tracking-wider block mb-1">General Coordinates</label>
+                                            <div className={`w-full rounded-lg p-2 text-[11px] font-mono flex items-center justify-center truncate ${subBoxBgClass}`}>
+                                                {obs.lat !== 0 || obs.lng !== 0 ? `${obs.lat.toFixed(4)}, ${obs.lng.toFixed(4)}` : 'Not Recorded'}
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -619,39 +865,19 @@
                                     <h2 className={headerAccentClass}>☀️ Weather</h2>
                                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                                         <div>
-                                            <label className={`text-[10px] font-medium uppercase tracking-wider block mb-1 ${isBright ? 'text-black' : 'text-slate-300'}`}>Sky Cover</label>
-                                            <select 
-                                                value={obs.weather.skyCover} 
-                                                onChange={e => setObs({...obs, weather: {...obs.weather, skyCover: e.target.value}})}
-                                                className={`w-full rounded-lg p-2 text-xs sm:text-sm ${inputBgClass}`}
-                                            >
-                                                <option value="CLR">CLR</option>
-                                                <option value="SCT">SCT</option>
-                                                <option value="BKN">BKN</option>
-                                                <option value="OVC">OVC</option>
+                                            <label className="text-[10px] font-medium uppercase tracking-wider block mb-1">Sky Cover</label>
+                                            <select value={obs.weather.skyCover} onChange={e => setObs({...obs, weather: {...obs.weather, skyCover: e.target.value}})} className={`w-full rounded-lg p-2 text-xs sm:text-sm ${inputBgClass}`}>
+                                                <option value="CLR">CLR</option><option value="SCT">SCT</option><option value="BKN">BKN</option><option value="OVC">OVC</option>
                                             </select>
                                         </div>
                                         <div>
-                                            <label className={`text-[10px] font-medium uppercase tracking-wider block mb-1 ${isBright ? 'text-black' : 'text-slate-300'}`}>Air Temp (°F)</label>
-                                            <input 
-                                                type="text" 
-                                                value={obs.weather.airTemp} 
-                                                onChange={e => setObs({...obs, weather: {...obs.weather, airTemp: e.target.value}})}
-                                                placeholder="e.g. 22"
-                                                className={`w-full rounded-lg p-2 text-xs sm:text-sm ${inputBgClass}`}
-                                            />
+                                            <label className="text-[10px] font-medium uppercase tracking-wider block mb-1">Air Temp (°F)</label>
+                                            <input type="text" value={obs.weather.airTemp} onChange={e => setObs({...obs, weather: {...obs.weather, airTemp: e.target.value}})} placeholder="e.g. 22" className={`w-full rounded-lg p-2 text-xs sm:text-sm ${inputBgClass}`} />
                                         </div>
                                         <div>
-                                            <label className={`text-[10px] font-medium uppercase tracking-wider block mb-1 ${isBright ? 'text-black' : 'text-slate-300'}`}>Wind Speed</label>
-                                            <select 
-                                                value={obs.weather.windSpeed} 
-                                                onChange={e => setObs({...obs, weather: {...obs.weather, windSpeed: e.target.value}})}
-                                                className={`w-full rounded-lg p-2 text-xs sm:text-sm ${inputBgClass}`}
-                                            >
-                                                <option value="Calm">Calm</option>
-                                                <option value="Light">Light</option>
-                                                <option value="Mod">Mod</option>
-                                                <option value="Strong">Strong</option>
+                                            <label className="text-[10px] font-medium uppercase tracking-wider block mb-1">Wind Speed</label>
+                                            <select value={obs.weather.windSpeed} onChange={e => setObs({...obs, weather: {...obs.weather, windSpeed: e.target.value}})} className={`w-full rounded-lg p-2 text-xs sm:text-sm ${inputBgClass}`}>
+                                                <option value="Calm">Calm</option><option value="Light">Light</option><option value="Mod">Mod</option><option value="Strong">Strong</option>
                                             </select>
                                         </div>
                                     </div>
@@ -667,12 +893,7 @@
                                             { key: 'collapsing', label: 'Snowpack Collapsing?' }
                                         ].map(item => (
                                             <label key={item.key} className={`flex items-center gap-2 p-2 rounded-lg cursor-pointer text-[11px] sm:text-xs font-semibold ${subBoxBgClass}`}>
-                                                <input 
-                                                    type="checkbox" 
-                                                    checked={obs.instability[item.key]} 
-                                                    onChange={e => setObs({...obs, instability: {...obs.instability, [item.key]: e.target.checked}})}
-                                                    className="accent-cyan-500 rounded"
-                                                />
+                                                <input type="checkbox" checked={obs.instability[item.key]} onChange={e => setObs({...obs, instability: {...obs.instability, [item.key]: e.target.checked}})} className="accent-cyan-500 rounded"/>
                                                 <span className="leading-tight">{item.label}</span>
                                             </label>
                                         ))}
@@ -680,13 +901,9 @@
 
                                     {(obs.instability.recentAvalanches || obs.instability.windLoading || obs.instability.cracking || obs.instability.collapsing) && (
                                         <div className={`p-3.5 rounded-xl space-y-3 ${subBoxBgClass}`}>
-                                            <div className="flex justify-between items-center border-b border-[#3A506B] pb-2 solar-border">
+                                            <div className="flex justify-between items-center border-b border-[#3A506B] pb-2">
                                                 <span className={`text-[11px] font-bold uppercase tracking-wider ${isBright ? 'text-black' : 'text-cyan-400'}`}>Active Parameters</span>
-                                                <button 
-                                                    type="button"
-                                                    onClick={() => setObs({...obs, instability: {...obs.instability, showAllParameters: !obs.instability.showAllParameters}})}
-                                                    className="text-[11px] text-cyan-400 hover:underline font-bold"
-                                                >
+                                                <button type="button" onClick={() => setObs({...obs, instability: {...obs.instability, showAllParameters: !obs.instability.showAllParameters}})} className="text-[11px] text-cyan-400 hover:underline font-bold">
                                                     {obs.instability.showAllParameters ? '▲ Hide All' : '▼ Show All'}
                                                 </button>
                                             </div>
@@ -697,62 +914,32 @@
                                                         <div className={`p-3 rounded-lg space-y-3 sm:col-span-3 ${subBoxBgClass}`}>
                                                             <div className="flex justify-between items-center">
                                                                 <span className="text-[11px] font-bold uppercase text-cyan-400">Recent Avalanches ({obs.instability.avalanches.length})</span>
-                                                                <button 
-                                                                    type="button"
-                                                                    onClick={addAvalanche}
-                                                                    className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-3 py-1 rounded text-[11px] transition"
-                                                                >
-                                                                    + Add Avalanche
-                                                                </button>
+                                                                <button type="button" onClick={addAvalanche} className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-3 py-1 rounded text-[11px] transition">+ Add Avalanche</button>
                                                             </div>
-
                                                             {(!obs.instability.avalanches || obs.instability.avalanches.length === 0) ? (
-                                                                <div className="text-center py-4 text-slate-400 text-xs italic">
-                                                                    No individual avalanches added yet. Click "+ Add Avalanche".
-                                                                </div>
+                                                                <div className="text-center py-4 text-slate-400 text-xs italic">No individual avalanches added yet. Click "+ Add Avalanche".</div>
                                                             ) : (
                                                                 <div className="space-y-3">
                                                                     {obs.instability.avalanches.map((av, index) => (
                                                                         <div key={av.id} className={`p-3 rounded-lg space-y-2.5 ${subBoxBgClass}`}>
-                                                                            <div className="flex justify-between items-center border-b border-[#3A506B] pb-1.5 solar-border">
+                                                                            <div className="flex justify-between items-center border-b border-[#3A506B] pb-1.5">
                                                                                 <span className="text-[10px] font-bold text-cyan-300 uppercase">Avalanche #{index + 1}</span>
-                                                                                <button 
-                                                                                    type="button"
-                                                                                    onClick={() => removeAvalanche(av.id)}
-                                                                                    className="text-red-400 hover:text-red-300 text-[10px] font-bold"
-                                                                                >
-                                                                                    🗑️ Remove
-                                                                                </button>
+                                                                                <button type="button" onClick={() => removeAvalanche(av.id)} className="text-red-400 text-[10px] font-bold">🗑️ Remove</button>
                                                                             </div>
-
                                                                             <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
                                                                                 <div>
                                                                                     <label className="text-[10px] block mb-0.5 font-medium">Elev (ft)</label>
-                                                                                    <input 
-                                                                                        type="number"
-                                                                                        value={av.elevation}
-                                                                                        onChange={e => handleAvalancheChange(av.id, 'elevation', e.target.value)}
-                                                                                        placeholder="e.g. 9500"
-                                                                                        className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                                    />
+                                                                                    <input type="number" value={av.elevation} onChange={e => handleAvalancheChange(av.id, 'elevation', e.target.value)} placeholder="e.g. 9500" className={`w-full rounded p-1.5 text-xs ${inputBgClass}`} />
                                                                                 </div>
                                                                                 <div>
                                                                                     <label className="text-[10px] block mb-0.5 font-medium">Aspect</label>
-                                                                                    <select 
-                                                                                        value={av.aspect}
-                                                                                        onChange={e => handleAvalancheChange(av.id, 'aspect', e.target.value)}
-                                                                                        className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                                    >
+                                                                                    <select value={av.aspect} onChange={e => handleAvalancheChange(av.id, 'aspect', e.target.value)} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}>
                                                                                         {['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'].map(d => <option key={d} value={d}>{d}</option>)}
                                                                                     </select>
                                                                                 </div>
                                                                                 <div>
                                                                                     <label className="text-[10px] block mb-0.5 font-medium">When?</label>
-                                                                                    <select 
-                                                                                        value={av.timeFrame}
-                                                                                        onChange={e => handleAvalancheChange(av.id, 'timeFrame', e.target.value)}
-                                                                                        className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                                    >
+                                                                                    <select value={av.timeFrame} onChange={e => handleAvalancheChange(av.id, 'timeFrame', e.target.value)} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}>
                                                                                         <option value="Today">Today</option>
                                                                                         <option value="Yesterday">Yesterday</option>
                                                                                         <option value="Past Few Days">Past Few Days</option>
@@ -761,11 +948,7 @@
                                                                                 </div>
                                                                                 <div>
                                                                                     <label className="text-[10px] block mb-0.5 font-medium">Size (D-Scale)</label>
-                                                                                    <select 
-                                                                                        value={av.size}
-                                                                                        onChange={e => handleAvalancheChange(av.id, 'size', e.target.value)}
-                                                                                        className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                                    >
+                                                                                    <select value={av.size} onChange={e => handleAvalancheChange(av.id, 'size', e.target.value)} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}>
                                                                                         <option value="D1">D1 (Harmless)</option>
                                                                                         <option value="D2">D2 (Small)</option>
                                                                                         <option value="D3">D3 (Medium)</option>
@@ -775,11 +958,7 @@
                                                                                 </div>
                                                                                 <div>
                                                                                     <label className="text-[10px] block mb-0.5 font-medium">R-Scale</label>
-                                                                                    <select 
-                                                                                        value={av.rScale || 'R1'}
-                                                                                        onChange={e => handleAvalancheChange(av.id, 'rScale', e.target.value)}
-                                                                                        className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                                    >
+                                                                                    <select value={av.rScale || 'R1'} onChange={e => handleAvalancheChange(av.id, 'rScale', e.target.value)} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}>
                                                                                         <option value="R1">R1 (Very Isolated)</option>
                                                                                         <option value="R2">R2 (Isolated)</option>
                                                                                         <option value="R3">R3 (Specific)</option>
@@ -788,15 +967,10 @@
                                                                                     </select>
                                                                                 </div>
                                                                             </div>
-
                                                                             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                                                                                 <div>
                                                                                     <label className="text-[10px] block mb-0.5 font-medium">Trigger</label>
-                                                                                    <select 
-                                                                                        value={av.trigger}
-                                                                                        onChange={e => handleAvalancheChange(av.id, 'trigger', e.target.value)}
-                                                                                        className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                                    >
+                                                                                    <select value={av.trigger} onChange={e => handleAvalancheChange(av.id, 'trigger', e.target.value)} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}>
                                                                                         <option value="N">N - Natural</option>
                                                                                         <option value="AS">AS - Skier Triggered</option>
                                                                                         <option value="SB">SB - Snowboarder Triggered</option>
@@ -807,11 +981,7 @@
                                                                                 </div>
                                                                                 <div>
                                                                                     <label className="text-[10px] block mb-0.5 font-medium">Problem Type</label>
-                                                                                    <select 
-                                                                                        value={av.problemType}
-                                                                                        onChange={e => handleAvalancheChange(av.id, 'problemType', e.target.value)}
-                                                                                        className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                                    >
+                                                                                    <select value={av.problemType} onChange={e => handleAvalancheChange(av.id, 'problemType', e.target.value)} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}>
                                                                                         <option value="">-- Select Problem --</option>
                                                                                         <option value="New Snow">New Snow</option>
                                                                                         <option value="Wind Slab">Wind Slab</option>
@@ -825,16 +995,8 @@
                                                                                 </div>
                                                                                 <div>
                                                                                     <label className="text-[10px] block mb-0.5 font-medium">Avalanche GPS</label>
-                                                                                    <button
-                                                                                        type="button"
-                                                                                        onClick={() => recordAvalancheGps(av.id)}
-                                                                                        className={`w-full rounded p-1.5 text-[11px] font-mono flex items-center justify-center gap-1 transition ${isBright ? 'bg-black text-white font-bold' : 'bg-[#0B132B] hover:bg-slate-900 border border-[#3A506B] text-cyan-400'}`}
-                                                                                    >
-                                                                                        {av.lat !== 0 || av.lng !== 0 ? (
-                                                                                            <span>📍 {av.lat.toFixed(3)}, {av.lng.toFixed(3)}</span>
-                                                                                        ) : (
-                                                                                            <span>📍 Record GPS</span>
-                                                                                        )}
+                                                                                    <button type="button" onClick={() => recordAvalancheGps(av.id)} className={`w-full rounded p-1.5 text-[11px] font-mono flex items-center justify-center gap-1 transition ${isBright ? 'bg-black text-white font-bold' : 'bg-[#0B132B] hover:bg-slate-900 border border-[#3A506B] text-cyan-400'}`}>
+                                                                                        {av.lat !== 0 || av.lng !== 0 ? <span>📍 {av.lat.toFixed(3)}, {av.lng.toFixed(3)}</span> : <span>📍 Record GPS</span>}
                                                                                     </button>
                                                                                 </div>
                                                                             </div>
@@ -853,11 +1015,7 @@
                                                             <div className="space-y-2">
                                                                 <div>
                                                                     <label className="text-[10px] font-medium uppercase block mb-0.5">Rate</label>
-                                                                    <select 
-                                                                        value={obs.instability.windLoadingRate}
-                                                                        onChange={e => setObs({...obs, instability: {...obs.instability, windLoadingRate: e.target.value}})}
-                                                                        className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                    >
+                                                                    <select value={obs.instability.windLoadingRate} onChange={e => setObs({...obs, instability: {...obs.instability, windLoadingRate: e.target.value}})} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}>
                                                                         <option value="Light">Light</option>
                                                                         <option value="Moderate">Moderate</option>
                                                                         <option value="Heavy">Heavy</option>
@@ -866,21 +1024,13 @@
                                                                 </div>
                                                                 <div>
                                                                     <label className="text-[10px] font-medium uppercase block mb-0.5">Direction</label>
-                                                                    <select 
-                                                                        value={obs.instability.windLoadingDirection}
-                                                                        onChange={e => setObs({...obs, instability: {...obs.instability, windLoadingDirection: e.target.value}})}
-                                                                        className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                    >
+                                                                    <select value={obs.instability.windLoadingDirection} onChange={e => setObs({...obs, instability: {...obs.instability, windLoadingDirection: e.target.value}})} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}>
                                                                         {['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'].map(d => <option key={d} value={d}>{d}</option>)}
                                                                     </select>
                                                                 </div>
                                                                 <div>
                                                                     <label className="text-[10px] font-medium uppercase block mb-0.5">Snow Available for Transport</label>
-                                                                    <select 
-                                                                        value={obs.instability.snowAvailableForTransport || 'Moderate'}
-                                                                        onChange={e => setObs({...obs, instability: {...obs.instability, snowAvailableForTransport: e.target.value}})}
-                                                                        className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                    >
+                                                                    <select value={obs.instability.snowAvailableForTransport || 'Moderate'} onChange={e => setObs({...obs, instability: {...obs.instability, snowAvailableForTransport: e.target.value}})} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}>
                                                                         <option value="None">None</option>
                                                                         <option value="Low">Low</option>
                                                                         <option value="Moderate">Moderate</option>
@@ -899,11 +1049,7 @@
                                                             </div>
                                                             <div>
                                                                 <label className="text-[10px] font-medium uppercase block mb-0.5">Extent</label>
-                                                                <select 
-                                                                    value={obs.instability.crackingExtent}
-                                                                    onChange={e => setObs({...obs, instability: {...obs.instability, crackingExtent: e.target.value}})}
-                                                                    className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                >
+                                                                <select value={obs.instability.crackingExtent} onChange={e => setObs({...obs, instability: {...obs.instability, crackingExtent: e.target.value}})} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}>
                                                                     <option value="Isolated">Isolated</option>
                                                                     <option value="Specific">Specific</option>
                                                                     <option value="Widespread">Widespread</option>
@@ -919,11 +1065,7 @@
                                                             </div>
                                                             <div>
                                                                 <label className="text-[10px] font-medium uppercase block mb-0.5">Extent</label>
-                                                                <select 
-                                                                    value={obs.instability.collapsingExtent}
-                                                                    onChange={e => setObs({...obs, instability: {...obs.instability, collapsingExtent: e.target.value}})}
-                                                                    className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                >
+                                                                <select value={obs.instability.collapsingExtent} onChange={e => setObs({...obs, instability: {...obs.instability, collapsingExtent: e.target.value}})} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}>
                                                                     <option value="Isolated">Isolated</option>
                                                                     <option value="Specific">Specific</option>
                                                                     <option value="Widespread">Widespread</option>
@@ -945,36 +1087,19 @@
                                                 📷 Add Photos
                                                 <input type="file" accept="image/*" multiple onChange={handlePhotoUpload} className="hidden" />
                                             </label>
-                                            <button 
-                                                type="button" 
-                                                onClick={startVoiceDictation}
-                                                className={`border text-[11px] px-2.5 py-1 rounded-lg flex items-center gap-1 transition shadow font-bold ${isBright ? 'bg-black text-white border-black' : 'bg-[#0B132B] hover:bg-slate-900 text-cyan-400 border-[#3A506B]'}`}
-                                            >
+                                            <button type="button" onClick={startVoiceDictation} className={`border text-[11px] px-2.5 py-1 rounded-lg flex items-center gap-1 transition shadow font-bold ${isBright ? 'bg-black text-white border-black' : 'bg-[#0B132B] hover:bg-slate-900 text-cyan-400 border-[#3A506B]'}`}>
                                                 🎙️ {isRecording ? 'Listening...' : 'Dictate'}
                                             </button>
                                         </div>
                                     </div>
-                                    <textarea 
-                                        value={obs.generalNotes}
-                                        onChange={e => setObs({...obs, generalNotes: e.target.value})}
-                                        placeholder="Type general observations, snowpack anomalies, wildlife activity..."
-                                        rows="3"
-                                        className={`w-full rounded-lg p-3 text-xs sm:text-sm focus:outline-none ${inputBgClass}`}
-                                    />
+                                    <textarea value={obs.generalNotes} onChange={e => setObs({...obs, generalNotes: e.target.value})} placeholder="Type observations, snowpack anomalies, wildlife activity..." rows="3" className={`w-full rounded-lg p-3 text-xs sm:text-sm focus:outline-none ${inputBgClass}`}/>
                                     {obs.photos && obs.photos.length > 0 && (
                                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
                                             {obs.photos.map(photo => (
                                                 <div key={photo.id} className={`relative group rounded-lg p-1 flex flex-col items-center ${subBoxBgClass}`}>
                                                     <img src={photo.url} alt={photo.name} className="w-full h-20 object-cover rounded" />
                                                     <span className="text-[9px] truncate w-full px-1 text-center mt-1 font-mono">{photo.name}</span>
-                                                    <button 
-                                                        type="button"
-                                                        onClick={() => removePhoto(photo.id)}
-                                                        className="absolute top-1.5 right-1.5 bg-red-600 hover:bg-red-700 text-white rounded-full w-5 h-5 flex items-center justify-center text-[10px] shadow transition opacity-90 group-hover:opacity-100 font-bold"
-                                                        title="Remove photo"
-                                                    >
-                                                        ✕
-                                                    </button>
+                                                    <button type="button" onClick={() => removePhoto(photo.id)} className="absolute top-1.5 right-1.5 bg-red-600 text-white rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold">✕</button>
                                                 </div>
                                             ))}
                                         </div>
@@ -985,10 +1110,45 @@
 
                         {activeTab === 'pit_profile' && (
                             <div className="space-y-5">
+                                {/* Pit-Specific Location & GPS Card - Condensed into One Row */}
+                                <div className={`${cardBgClass} p-3.5 sm:p-4 rounded-xl space-y-3`}>
+                                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+                                        <h2 className={headerAccentClass}>📍 Pit Specific Location & GPS</h2>
+                                        
+                                        <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto justify-end">
+                                            <div className="flex items-center gap-1.5">
+                                                <label className="text-[10px] font-bold uppercase whitespace-nowrap">Elev (ft):</label>
+                                                <input type="number" value={obs.pitElevation} onChange={e => setObs({...obs, pitElevation: e.target.value})} placeholder="e.g. 9500" className={`w-24 rounded-lg p-1.5 text-xs font-mono font-bold ${inputBgClass}`} />
+                                            </div>
+
+                                            <div className="flex items-center gap-1.5">
+                                                <label className="text-[10px] font-bold uppercase whitespace-nowrap">Slope (°):</label>
+                                                <input type="number" value={obs.pitSlopeAngle || ''} onChange={e => setObs({...obs, pitSlopeAngle: e.target.value})} placeholder="e.g. 34" className={`w-16 rounded-lg p-1.5 text-xs font-mono font-bold ${inputBgClass}`} />
+                                                <button type="button" onClick={() => captureSlopeFromSensor('pitSlopeAngle')} title="Measure Slope with Sensor" className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-2.5 py-1.5 rounded-lg text-xs shadow shrink-0 flex items-center">
+                                                    📐
+                                                </button>
+                                            </div>
+
+                                            <div className={`px-2.5 py-1.5 rounded-lg text-xs font-mono font-bold flex items-center shrink-0 ${obs.pitLat !== 0 || obs.pitLng !== 0 ? 'text-emerald-400 bg-emerald-950/40 border border-emerald-800' : 'text-slate-400 ' + subBoxBgClass}`}>
+                                                {obs.pitLat !== 0 || obs.pitLng !== 0 ? '✓ GPS Recorded' : 'GPS Not Recorded'}
+                                            </div>
+
+                                            <button
+                                                type="button"
+                                                onClick={fetchPitGpsLocation}
+                                                disabled={isFetchingPitGps}
+                                                className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-3.5 py-1.5 rounded-lg text-xs shadow flex items-center gap-1.5 transition shrink-0"
+                                            >
+                                                {isFetchingPitGps ? '⏳ Acquiring...' : '📍 Record Pit GPS'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div className={`${cardBgClass} p-3.5 sm:p-4 rounded-xl space-y-3.5`}>
                                     <div className="flex justify-between items-center">
                                         <h2 className={headerAccentClass}>Snow Pit Hardness Profile</h2>
-                                        <span className="text-[10px] font-mono font-bold">X-Axis: F -&gt; 4F -&gt; 1F -&gt; P -&gt; K -&gt; I | Y-Axis: 0cm (Ground) -&gt; {totalDepth}cm (Surface)</span>
+                                        <span className="text-[10px] font-mono font-bold">X: F -&gt; I | Y: 0cm -&gt; {totalDepth}cm</span>
                                     </div>
                                     <div className={`p-3.5 rounded-lg flex flex-col sm:flex-row items-center justify-between gap-4 h-64 ${subBoxBgClass}`}>
                                         <svg className={`w-full sm:w-2/3 h-full rounded border relative ${isBright ? 'bg-white border-black' : 'bg-[#0B132B] border-[#3A506B]'}`} viewBox={`0 0 ${svgWidth} ${svgHeight}`} preserveAspectRatio="none">
@@ -1014,7 +1174,7 @@
 
                                             {obs.layers.length === 0 && (
                                                 <text x={leftPadding + plotWidth / 2} y={topPadding + plotHeight / 2} fill={isBright ? "#64748b" : "#475569"} fontSize="11" textAnchor="middle" fontStyle="italic">
-                                                    No layers logged yet. Click "+ Add Layer" below.
+                                                    No layers logged yet.
                                                 </text>
                                             )}
 
@@ -1029,23 +1189,13 @@
 
                                                 return (
                                                     <g key={l.id}>
-                                                        <rect 
-                                                            x={leftPadding} 
-                                                            y={startY} 
-                                                            width={rightX - leftPadding} 
-                                                            height={layerHeight} 
-                                                            fill={isBright ? "#0284C7" : "#0369a1"} 
-                                                            opacity="0.8" 
-                                                            stroke={isBright ? "#000000" : "#38bdf8"} 
-                                                            strokeWidth="1" 
-                                                        />
-                                                        <text x={leftPadding + 6} y={startY + Math.min(14, layerHeight - 4)} fill="#FFFFFF" fontSize="9" fontWeight="bold" fontFamily="sans-serif">
-                                                            {l.hardness} {l.grainType ? `(${l.grainType})` : ''}
-                                                        </text>
+                                                        <rect x={leftPadding} y={startY} width={rightX - leftPadding} height={layerHeight} fill={isBright ? "#0284C7" : "#0369a1"} opacity="0.8" stroke={isBright ? "#000000" : "#38bdf8"} strokeWidth="1" />
+                                                        <text x={leftPadding + 6} y={startY + Math.min(14, layerHeight - 4)} fill="#FFFFFF" fontSize="9" fontWeight="bold">{l.hardness} {l.grainType ? `(${l.grainType})` : ''}</text>
                                                     </g>
                                                 );
                                             })}
 
+                                            {/* Render Snow Temperature Profile Overlay */}
                                             {obs.snowTemps.length > 0 && (() => {
                                                 const sortedTemps = [...obs.snowTemps].sort((a, b) => Number(a.depth) - Number(b.depth));
                                                 const pointsStr = sortedTemps.map(t => `${getTempX(t.temp)},${getY(t.depth)}`).join(' ');
@@ -1068,6 +1218,7 @@
                                                 );
                                             })()}
 
+                                            {/* Render PST Test Markers Overlay */}
                                             {obs.pstTests.map(pst => {
                                                 const yPos = getY(pst.depth);
                                                 return (
@@ -1082,14 +1233,12 @@
 
                                         <div className="w-full sm:w-1/3 space-y-1.5 text-xs overflow-y-auto max-h-full">
                                             {obs.layers.length === 0 ? (
-                                                <div className="text-[11px] text-slate-400 italic text-center py-8 font-semibold">
-                                                    Layer summary list will display here
-                                                </div>
+                                                <div className="text-[11px] text-slate-400 italic text-center py-8 font-semibold">Layer summary list will display here</div>
                                             ) : (
                                                 obs.layers.map((l) => (
                                                     <div key={l.id} className={`flex justify-between px-2.5 py-1 rounded font-mono text-[11px] ${subBoxBgClass}`}>
                                                         <span>{l.topDepth}-{l.bottomDepth}cm</span>
-                                                        <span className="font-bold text-cyan-400">{l.hardness} / {l.grainType || '—'} {l.stabilityTest ? `[${l.stabilityTest}]` : ''}</span>
+                                                        <span className="font-bold text-cyan-400">{l.hardness} / {l.grainType || '—'}</span>
                                                     </div>
                                                 ))
                                             )}
@@ -1098,112 +1247,72 @@
                                 </div>
 
                                 <div className={`${cardBgClass} p-3.5 sm:p-4 rounded-xl space-y-3.5`}>
-                                    <div className="flex flex-wrap justify-between items-center gap-3 border-b border-[#3A506B] pb-2.5 solar-border">
+                                    <div className="flex flex-wrap justify-between items-center gap-3 border-b border-[#3A506B] pb-2.5">
                                         <h2 className={headerAccentClass}>Pit Layers</h2>
-                                        
-                                        <div className="flex items-center gap-3">
-                                            <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border shadow-inner ${subBoxBgClass}`}>
-                                                <label className="text-[10px] font-bold uppercase tracking-wider whitespace-nowrap">Total Depth (HS):</label>
-                                                <input 
-                                                    type="number" 
-                                                    value={obs.totalSnowDepth} 
-                                                    onChange={e => setObs({...obs, totalSnowDepth: e.target.value})}
-                                                    placeholder="cm"
-                                                    className={`w-14 rounded px-1.5 py-0.5 text-xs font-mono font-bold text-center focus:outline-none ${inputBgClass}`}
-                                                />
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <button 
+                                                type="button"
+                                                onClick={startLayerVoiceDictation} 
+                                                className={`text-xs px-3 py-1.5 rounded font-bold transition flex items-center gap-1.5 border shadow ${
+                                                    isDictatingLayers 
+                                                        ? 'bg-red-600 text-white animate-pulse border-red-500' 
+                                                        : isBright ? 'bg-black text-white border-black' : 'bg-[#0B132B] hover:bg-slate-900 text-cyan-400 border-[#3A506B]'
+                                                }`}
+                                            >
+                                                🎙️ {isDictatingLayers ? 'Listening for Layers...' : 'Dictate Layer'}
+                                            </button>
+                                            <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${subBoxBgClass}`}>
+                                                <label className="text-[10px] font-bold uppercase whitespace-nowrap">Total Depth (HS):</label>
+                                                <input type="number" value={obs.totalSnowDepth} onChange={e => setObs({...obs, totalSnowDepth: e.target.value})} placeholder="cm" className={`w-14 rounded px-1.5 py-0.5 text-xs font-mono font-bold text-center ${inputBgClass}`} />
                                                 <span className="text-[10px] font-mono font-bold">cm</span>
                                             </div>
-
-                                            <button onClick={addLayer} className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs px-3 py-1.5 rounded font-bold shadow transition">
-                                                + Add Layer
-                                            </button>
+                                            <button onClick={addLayer} className="bg-cyan-500 text-slate-950 text-xs px-3 py-1.5 rounded font-bold transition">+ Add Layer</button>
                                         </div>
                                     </div>
 
-                                    {obs.layers.length === 0 ? (
-                                        <div className={`text-center py-8 rounded-lg border border-dashed text-xs ${subBoxBgClass}`}>
-                                            <p className="mb-2 font-semibold">No pit layers recorded yet.</p>
-                                            <button onClick={addLayer} className="bg-slate-800 hover:bg-slate-700 text-cyan-400 border border-slate-700 text-xs px-3 py-1 rounded font-bold transition">
-                                                + Add First Layer
-                                            </button>
+                                    {obs.layers.map((layer) => (
+                                        <div key={layer.id} className={`p-3 rounded-lg grid grid-cols-2 sm:grid-cols-7 gap-2.5 items-center ${subBoxBgClass}`}>
+                                            <div>
+                                                <label className="text-[10px] font-bold block mb-1">Top (cm)</label>
+                                                <input type="number" value={layer.topDepth} onChange={e => handleLayerChange(layer.id, 'topDepth', Number(e.target.value))} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`} />
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] font-bold block mb-1">Bottom (cm)</label>
+                                                <input type="number" value={layer.bottomDepth} onChange={e => handleLayerChange(layer.id, 'bottomDepth', Number(e.target.value))} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`} />
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] font-bold block mb-1">Hardness</label>
+                                                <select value={layer.hardness} onChange={e => handleLayerChange(layer.id, 'hardness', e.target.value)} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}>
+                                                    {hardnessLevels.map(h => <option key={h} value={h}>{h}</option>)}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] font-bold block mb-1">Grain (SWAG)</label>
+                                                <select value={layer.grainType} onChange={e => handleLayerChange(layer.id, 'grainType', e.target.value)} className={`w-full rounded p-1.5 text-xs font-mono ${inputBgClass}`}>
+                                                    <option value="">-- Select Grain --</option>
+                                                    {grainTypesList.map(g => (
+                                                        <option key={g.code} value={g.code}>
+                                                            {g.symbol} {g.code} ({g.name})
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] font-bold block mb-1">Size (mm)</label>
+                                                <input type="text" value={layer.grainSize} onChange={e => handleLayerChange(layer.id, 'grainSize', e.target.value)} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`} />
+                                            </div>
+                                            <div>
+                                                <label className="text-[10px] font-bold block mb-1">CT / ECT Result</label>
+                                                <input type="text" value={layer.stabilityTest || ''} onChange={e => handleLayerChange(layer.id, 'stabilityTest', e.target.value)} placeholder="e.g. CTM 14" className={`w-full rounded p-1.5 text-xs ${inputBgClass}`} />
+                                            </div>
+                                            <div className="flex justify-end pt-3 sm:pt-0">
+                                                <button onClick={() => removeLayer(layer.id)} className="bg-red-500/20 text-red-500 p-2 rounded text-xs font-bold">🗑️ Delete</button>
+                                            </div>
                                         </div>
-                                    ) : (
-                                        <div className="space-y-2.5">
-                                            {obs.layers.map((layer) => (
-                                                <div key={layer.id} className={`p-3 rounded-lg grid grid-cols-2 sm:grid-cols-7 gap-2.5 items-center ${subBoxBgClass}`}>
-                                                    <div>
-                                                        <label className="text-[10px] font-bold block mb-1">Top (cm)</label>
-                                                        <input 
-                                                            type="number" 
-                                                            value={layer.topDepth} 
-                                                            onChange={e => handleLayerChange(layer.id, 'topDepth', Number(e.target.value))}
-                                                            className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                        />
-                                                    </div>
-                                                    <div>
-                                                        <label className="text-[10px] font-bold block mb-1">Bottom (cm)</label>
-                                                        <input 
-                                                            type="number" 
-                                                            value={layer.bottomDepth} 
-                                                            onChange={e => handleLayerChange(layer.id, 'bottomDepth', Number(e.target.value))}
-                                                            className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                        />
-                                                    </div>
-                                                    <div>
-                                                        <label className="text-[10px] font-bold block mb-1">Hardness</label>
-                                                        <select 
-                                                            value={layer.hardness} 
-                                                            onChange={e => handleLayerChange(layer.id, 'hardness', e.target.value)}
-                                                            className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                        >
-                                                            {hardnessLevels.map(h => <option key={h} value={h}>{h}</option>)}
-                                                        </select>
-                                                    </div>
-                                                    <div>
-                                                        <label className="text-[10px] font-bold block mb-1">Grain (SWAG)</label>
-                                                        <select 
-                                                            value={layer.grainType} 
-                                                            onChange={e => handleLayerChange(layer.id, 'grainType', e.target.value)}
-                                                            className={`w-full rounded p-1.5 text-xs font-mono ${inputBgClass}`}
-                                                        >
-                                                            <option value="">-- Select --</option>
-                                                            {grainTypesList.map(g => (
-                                                                <option key={g.code} value={g.code}>
-                                                                    {g.symbol} {g.code} ({g.name})
-                                                                </option>
-                                                            ))}
-                                                        </select>
-                                                    </div>
-                                                    <div>
-                                                        <label className="text-[10px] font-bold block mb-1">Size (mm)</label>
-                                                        <input 
-                                                            type="text" 
-                                                            value={layer.grainSize} 
-                                                            onChange={e => handleLayerChange(layer.id, 'grainSize', e.target.value)}
-                                                            className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                        />
-                                                    </div>
-                                                    <div>
-                                                        <label className="text-[10px] font-bold block mb-1">CT / ECT Result</label>
-                                                        <input 
-                                                            type="text" 
-                                                            value={layer.stabilityTest || ''} 
-                                                            onChange={e => handleLayerChange(layer.id, 'stabilityTest', e.target.value)}
-                                                            placeholder="e.g. CTM 14 (Q2)"
-                                                            className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                        />
-                                                    </div>
-                                                    <div className="flex justify-end pt-3 sm:pt-0">
-                                                        <button onClick={() => removeLayer(layer.id)} className="bg-red-500/20 hover:bg-red-500/40 text-red-500 p-2 rounded text-xs transition font-bold">
-                                                            🗑️ Delete
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
+                                    ))}
                                 </div>
 
+                                {/* Snow Temperature Profile Section */}
                                 <div className={`${cardBgClass} p-3.5 sm:p-4 rounded-xl space-y-3.5`}>
                                     <div className="flex justify-between items-center cursor-pointer" onClick={() => setShowTempSection(!showTempSection)}>
                                         <h2 className={headerAccentClass}>
@@ -1213,42 +1322,29 @@
                                     </div>
 
                                     {showTempSection && (
-                                        <div className="space-y-3 pt-2 border-t border-[#3A506B] solar-border">
+                                        <div className="space-y-3 pt-2 border-t border-[#3A506B]">
                                             <div className="flex justify-between items-center">
-                                                <p className="text-[11px] font-medium">Record snow temperatures at various depths (e.g. -2.5°C at 20cm).</p>
+                                                <p className="text-[11px] font-medium">Record snow temperatures at various depths.</p>
                                                 <button onClick={addTempPoint} className={`text-xs px-3 py-1 rounded font-bold transition border ${isBright ? 'bg-black text-white border-black' : 'bg-slate-800 hover:bg-slate-700 text-cyan-400 border-slate-700'}`}>
                                                     + Add Temp Point
                                                 </button>
                                             </div>
                                             {obs.snowTemps.length === 0 ? (
-                                                <p className="text-xs text-slate-400 italic py-3 text-center font-medium">No temperature points recorded.</p>
+                                                <p className="text-xs text-slate-400 italic py-3 text-center">No temperature points recorded.</p>
                                             ) : (
                                                 <div className="space-y-2">
                                                     {obs.snowTemps.map(temp => (
                                                         <div key={temp.id} className={`p-2.5 rounded-lg flex items-center gap-3 ${subBoxBgClass}`}>
                                                             <div className="w-1/3">
                                                                 <label className="text-[10px] font-bold block mb-1">Depth (cm)</label>
-                                                                <input 
-                                                                    type="number" 
-                                                                    value={temp.depth} 
-                                                                    onChange={e => handleTempChange(temp.id, 'depth', Number(e.target.value))}
-                                                                    className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                />
+                                                                <input type="number" value={temp.depth} onChange={e => handleTempChange(temp.id, 'depth', Number(e.target.value))} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`} />
                                                             </div>
                                                             <div className="w-1/3">
                                                                 <label className="text-[10px] font-bold block mb-1">Temp (°C)</label>
-                                                                <input 
-                                                                    type="text" 
-                                                                    value={temp.temp} 
-                                                                    onChange={e => handleTempChange(temp.id, 'temp', e.target.value)}
-                                                                    placeholder="e.g. -2.5"
-                                                                    className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                />
+                                                                <input type="text" value={temp.temp} onChange={e => handleTempChange(temp.id, 'temp', e.target.value)} placeholder="e.g. -2.5" className={`w-full rounded p-1.5 text-xs ${inputBgClass}`} />
                                                             </div>
                                                             <div className="pt-4">
-                                                                <button onClick={() => removeTempPoint(temp.id)} className="bg-red-500/20 hover:bg-red-500/40 text-red-500 p-2 rounded text-xs transition font-bold">
-                                                                    🗑️
-                                                                </button>
+                                                                <button onClick={() => removeTempPoint(temp.id)} className="bg-red-500/20 text-red-500 p-2 rounded text-xs font-bold">🗑️</button>
                                                             </div>
                                                         </div>
                                                     ))}
@@ -1258,6 +1354,7 @@
                                     )}
                                 </div>
 
+                                {/* Propagation Saw Tests (PST) Section */}
                                 <div className={`${cardBgClass} p-3.5 sm:p-4 rounded-xl space-y-3.5`}>
                                     <div className="flex justify-between items-center cursor-pointer" onClick={() => setShowPstSection(!showPstSection)}>
                                         <h2 className={headerAccentClass}>
@@ -1267,42 +1364,29 @@
                                     </div>
 
                                     {showPstSection && (
-                                        <div className="space-y-3 pt-2 border-t border-[#3A506B] solar-border">
+                                        <div className="space-y-3 pt-2 border-t border-[#3A506B]">
                                             <div className="flex justify-between items-center">
-                                                <p className="text-[11px] font-medium">Record Propagation Saw Test results (e.g. PST 35/100 (End)).</p>
+                                                <p className="text-[11px] font-medium">Record Propagation Saw Test results.</p>
                                                 <button onClick={addPstTest} className={`text-xs px-3 py-1 rounded font-bold transition border ${isBright ? 'bg-black text-white border-black' : 'bg-slate-800 hover:bg-slate-700 text-cyan-400 border-slate-700'}`}>
                                                     + Add PST Test
                                                 </button>
                                             </div>
                                             {obs.pstTests.length === 0 ? (
-                                                <p className="text-xs text-slate-400 italic py-3 text-center font-medium">No PST tests recorded.</p>
+                                                <p className="text-xs text-slate-400 italic py-3 text-center">No PST tests recorded.</p>
                                             ) : (
                                                 <div className="space-y-2">
                                                     {obs.pstTests.map(pst => (
                                                         <div key={pst.id} className={`p-2.5 rounded-lg flex items-center gap-3 ${subBoxBgClass}`}>
                                                             <div className="w-1/3">
                                                                 <label className="text-[10px] font-bold block mb-1">Depth (cm)</label>
-                                                                <input 
-                                                                    type="number" 
-                                                                    value={pst.depth} 
-                                                                    onChange={e => handlePstChange(pst.id, 'depth', Number(e.target.value))}
-                                                                    className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                />
+                                                                <input type="number" value={pst.depth} onChange={e => handlePstChange(pst.id, 'depth', Number(e.target.value))} className={`w-full rounded p-1.5 text-xs ${inputBgClass}`} />
                                                             </div>
                                                             <div className="w-2/3">
                                                                 <label className="text-[10px] font-bold block mb-1">PST Result</label>
-                                                                <input 
-                                                                    type="text" 
-                                                                    value={pst.result} 
-                                                                    onChange={e => handlePstChange(pst.id, 'result', e.target.value)}
-                                                                    placeholder="e.g. PST 35/100 (End)"
-                                                                    className={`w-full rounded p-1.5 text-xs ${inputBgClass}`}
-                                                                />
+                                                                <input type="text" value={pst.result} onChange={e => handlePstChange(pst.id, 'result', e.target.value)} placeholder="e.g. PST 35/100 (End)" className={`w-full rounded p-1.5 text-xs ${inputBgClass}`} />
                                                             </div>
                                                             <div className="pt-4">
-                                                                <button onClick={() => removePstTest(pst.id)} className="bg-red-500/20 hover:bg-red-500/40 text-red-500 p-2 rounded text-xs transition font-bold">
-                                                                    🗑️
-                                                                </button>
+                                                                <button onClick={() => removePstTest(pst.id)} className="bg-red-500/20 text-red-500 p-2 rounded text-xs font-bold">🗑️</button>
                                                             </div>
                                                         </div>
                                                     ))}
@@ -1316,85 +1400,207 @@
 
                         {activeTab === 'export' && (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                                <div className={`${cardBgClass} p-6 rounded-xl text-center space-y-4 flex flex-col justify-between`}>
-                                    <div>
-                                        <h2 className="text-sm font-bold uppercase mb-2 text-cyan-400">CalTopo & Gaia GPS GPX Export</h2>
-                                        <p className="text-xs font-medium max-w-sm mx-auto">Generate standard GPX waypoint exports containing your observation coordinates for seamless offline navigation.</p>
-                                    </div>
-                                    <button onClick={exportGPX} className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-6 py-2.5 rounded-lg text-xs shadow transition w-full">
-                                        Download GPX Waypoint File
-                                    </button>
+                                <div className={`${cardBgClass} p-6 rounded-xl text-center space-y-4`}>
+                                    <h2 className="text-sm font-bold uppercase text-cyan-400">CalTopo & Gaia GPX Export</h2>
+                                    <p className="text-xs">Generate GPX exports containing both general and pit coordinates for navigation apps.</p>
+                                    <button onClick={exportGPX} className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-6 py-2.5 rounded-lg text-xs w-full">Download GPX File</button>
                                 </div>
-
-                                <div className={`${cardBgClass} p-6 rounded-xl text-center space-y-4 flex flex-col justify-between`}>
-                                    <div>
-                                        <h2 className="text-sm font-bold uppercase mb-2 text-cyan-400">CAAML v5.0 XML Schema Exporter</h2>
-                                        <p className="text-xs font-medium max-w-sm mx-auto">Export your snow pit profile into standards-compliant XML format for professional forecasting center compatibility.</p>
-                                    </div>
-                                    <button onClick={exportCAAML} className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-6 py-2.5 rounded-lg text-xs shadow transition w-full">
-                                        Export CAAML v5.0 XML
-                                    </button>
+                                <div className={`${cardBgClass} p-6 rounded-xl text-center space-y-4`}>
+                                    <h2 className="text-sm font-bold uppercase text-cyan-400">CAAML v5.0 XML Schema Exporter</h2>
+                                    <p className="text-xs">Export snow pit profile into XML format for avalanche centers.</p>
+                                    <button onClick={exportCAAML} className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-6 py-2.5 rounded-lg text-xs w-full">Export CAAML XML</button>
                                 </div>
                             </div>
                         )}
 
                         {activeTab === 'logbook' && (
-                            <div className="space-y-3">
-                                <h2 className={headerAccentClass}>Saved Local Observations ({savedLogbook.length})</h2>
-                                {savedLogbook.length === 0 ? (
-                                    <p className={`text-xs italic p-6 text-center rounded-xl font-medium ${subBoxBgClass}`}>No saved observations in local memory yet.</p>
-                                ) : (
-                                    savedLogbook.map((item, idx) => (
-                                        <div key={idx} className={`p-3.5 rounded-xl text-xs space-y-2 ${subBoxBgClass}`}>
-                                            <div className="flex justify-between font-bold text-cyan-400">
-                                                <span>{item.locationName || 'Untitled Location'}</span>
-                                                <span className={isBright ? 'text-black' : 'text-slate-300'}>{item.elevation || '0'}ft ({item.aspect})</span>
-                                            </div>
-                                            <p className="font-medium">Observer: {item.observerName || 'N/A'} | Layers Logged: {item.layers.length} | HS: {item.totalSnowDepth || 'N/A'}cm | Slope: {item.slopeAngle || '0'}°</p>
-                                            
-                                            {item.instability?.avalanches && item.instability.avalanches.length > 0 && (
-                                                <div className="text-[11px] font-mono space-y-1 border-t border-[#3A506B] pt-1 solar-border">
-                                                    <span className="font-bold uppercase text-cyan-400">Recent Avalanches ({item.instability.avalanches.length}):</span>
-                                                    {item.instability.avalanches.map((av, avIdx) => (
-                                                        <div key={avIdx} className="pl-2">
-                                                            • #{avIdx+1}: {av.size} / {av.rScale} {av.problemType || 'Unspecified'} ({av.trigger}), Elev: {av.elevation}ft ({av.aspect}), When: {av.timeFrame} {av.lat ? `[GPS: ${av.lat.toFixed(3)}, ${av.lng.toFixed(3)}]` : ''}
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
+                            <div className="space-y-4">
+                                <div className={`${cardBgClass} p-3.5 sm:p-4 rounded-xl space-y-3.5`}>
+                                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                                        <div>
+                                            <h2 className={headerAccentClass}>📖 Saved Observation Logbook</h2>
+                                            <p className="text-[11px] text-slate-400 mt-0.5">Search, group, and manage your field observations.</p>
+                                        </div>
+                                        <button onClick={exportLogbookJSON} className="bg-slate-800 hover:bg-slate-700 text-cyan-400 border border-slate-700 text-xs px-3 py-1.5 rounded font-bold transition flex items-center gap-1.5">
+                                            📥 Backup / Export Database
+                                        </button>
+                                    </div>
 
-                                            {item.photos && item.photos.length > 0 && (
-                                                <div className="space-y-1 border-t border-[#3A506B] pt-1 solar-border">
-                                                    <span className="font-bold uppercase text-cyan-400 text-[10px]">Attached Photos ({item.photos.length}):</span>
-                                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                                                        {item.photos.map((photo, pIdx) => (
-                                                            <div key={pIdx} className={`rounded p-1 flex flex-col items-center ${subBoxBgClass}`}>
-                                                                <img src={photo.url} alt={photo.name} className="w-full h-16 object-cover rounded" />
-                                                                <span className="text-[9px] truncate w-full px-1 text-center mt-0.5 font-mono">{photo.name}</span>
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2">
+                                        <div>
+                                            <label className="text-[10px] font-bold uppercase block mb-1">Search Observations</label>
+                                            <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search by location, observer..." className={`w-full rounded-lg p-2 text-xs focus:outline-none ${inputBgClass}`} />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-bold uppercase block mb-1">Group Logs By</label>
+                                            <select value={groupBy} onChange={e => setGroupBy(e.target.value)} className={`w-full rounded-lg p-2 text-xs focus:outline-none ${inputBgClass}`}>
+                                                <option value="date">Date Recorded</option>
+                                                <option value="location">Location / Drainage</option>
+                                                <option value="observer">Observer Name</option>
+                                                <option value="aspect">Aspect</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-bold uppercase block mb-1">Instability Filter</label>
+                                            <select value={filterTag} onChange={e => setFilterTag(e.target.value)} className={`w-full rounded-lg p-2 text-xs focus:outline-none ${inputBgClass}`}>
+                                                <option value="all">All Logs</option>
+                                                <option value="avalanches">⚠️ Recent Avalanches</option>
+                                                <option value="cracking">⚡ Snowpack Cracking</option>
+                                                <option value="collapsing">💥 Collapsing / Whumpfs</option>
+                                                <option value="wind">💨 Wind Loading</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {Object.keys(groupedLogbook).length === 0 ? (
+                                    <div className={`p-8 rounded-xl text-center text-xs italic font-medium ${subBoxBgClass}`}>
+                                        No observation logs matched your search/filter criteria.
+                                    </div>
+                                ) : (
+                                    Object.entries(groupedLogbook).map(([groupTitle, logs]) => (
+                                        <div key={groupTitle} className="space-y-2">
+                                            <div className="flex items-center gap-2 px-1">
+                                                <span className="text-xs font-black uppercase text-cyan-400">{groupTitle}</span>
+                                                <span className="text-[10px] bg-slate-800 text-slate-300 font-mono px-2 py-0.5 rounded-full border border-slate-700">{logs.length}</span>
+                                            </div>
+
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                {logs.map(item => (
+                                                    <div key={item.id} className={`p-3.5 rounded-xl text-xs space-y-2.5 transition border hover:border-cyan-500/50 ${subBoxBgClass}`}>
+                                                        <div className="flex justify-between items-start font-bold border-b border-[#3A506B] pb-2">
+                                                            <div>
+                                                                <h3 className="text-sm font-extrabold text-cyan-300">{item.locationName || 'Untitled Location'}</h3>
+                                                                <p className="text-[10px] text-slate-400 font-normal">
+                                                                    {item.createdAt ? new Date(item.createdAt).toLocaleString() : 'No timestamp'}
+                                                                </p>
+                                                            </div>
+                                                            <div className="text-right font-mono text-[11px]">
+                                                                <span className="text-amber-400">{item.pitElevation || item.elevation || '0'}ft</span>
+                                                                <span className="ml-1 text-slate-300">({item.aspect})</span>
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="grid grid-cols-2 gap-2 text-[11px] font-mono text-slate-300">
+                                                            <div>Observer: <span className="text-white font-bold">{item.observerName || 'N/A'}</span></div>
+                                                            <div>Snow Depth (HS): <span className="text-white font-bold">{item.totalSnowDepth || 'N/A'}cm</span></div>
+                                                            <div>Layers Logged: <span className="text-white font-bold">{item.layers ? item.layers.length : 0}</span></div>
+                                                            <div>Pit Slope: <span className="text-white font-bold">{item.pitSlopeAngle || item.slopeAngle || '0'}°</span></div>
+                                                        </div>
+
+                                                        {item.instability && (
+                                                            <div className="flex flex-wrap gap-1 pt-1">
+                                                                {item.instability.recentAvalanches && <span className="text-[9px] bg-red-950 text-red-300 px-1.5 py-0.5 rounded border border-red-800 font-bold">⚠️ Avalanches</span>}
+                                                                {item.instability.cracking && <span className="text-[9px] bg-amber-950 text-amber-300 px-1.5 py-0.5 rounded border border-amber-800 font-bold">⚡ Cracking</span>}
+                                                                {item.instability.collapsing && <span className="text-[9px] bg-amber-950 text-amber-300 px-1.5 py-0.5 rounded border border-amber-800 font-bold">💥 Collapsing</span>}
+                                                                {item.instability.windLoading && <span className="text-[9px] bg-cyan-950 text-cyan-300 px-1.5 py-0.5 rounded border border-cyan-800 font-bold">💨 Wind Loading</span>}
+                                                            </div>
+                                                        )}
+
+                                                        <div className="flex justify-between items-center border-t border-[#3A506B] pt-2">
+                                                            <button onClick={() => setSelectedReportModal(item)} className="text-[11px] text-cyan-400 hover:underline font-bold flex items-center gap-1">
+                                                                <span>🔍 View Full Report</span>
+                                                            </button>
+                                                            <div className="flex items-center gap-2">
+                                                                <button onClick={() => loadRecordToActiveSession(item)} className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 px-2.5 py-1 rounded text-[10px] font-bold transition">
+                                                                    📂 Load to Edit
+                                                                </button>
+                                                                <button onClick={() => deleteRecord(item.id)} className="text-red-400 hover:text-red-300 text-[11px] font-bold px-1" title="Delete record">
+                                                                    🗑️
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+
+                                {selectedReportModal && (
+                                    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-2 sm:p-4">
+                                        <div className={`max-w-3xl w-full max-h-[90vh] overflow-y-auto rounded-xl p-4 sm:p-6 space-y-4 ${cardBgClass}`}>
+                                            <div className="flex justify-between items-start border-b border-[#3A506B] pb-3">
+                                                <div>
+                                                    <h2 className="text-lg font-bold text-cyan-400">{selectedReportModal.locationName || 'Untitled Location'}</h2>
+                                                    <p className="text-xs text-slate-400">
+                                                        Recorded: {selectedReportModal.createdAt ? new Date(selectedReportModal.createdAt).toLocaleString() : 'N/A'}
+                                                    </p>
+                                                </div>
+                                                <button onClick={() => setSelectedReportModal(null)} className="text-slate-400 hover:text-white font-bold text-lg">✕</button>
+                                            </div>
+
+                                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono p-3 rounded-lg bg-[#0B132B] border border-[#3A506B]">
+                                                <div>Observer: <b>{selectedReportModal.observerName || 'N/A'}</b></div>
+                                                <div>Pit Elev: <b>{selectedReportModal.pitElevation || selectedReportModal.elevation || '0'} ft</b></div>
+                                                <div>Aspect: <b>{selectedReportModal.aspect}</b></div>
+                                                <div>Pit Slope: <b>{selectedReportModal.pitSlopeAngle || selectedReportModal.slopeAngle || '0'}°</b></div>
+                                                <div>HS: <b>{selectedReportModal.totalSnowDepth || 'N/A'} cm</b></div>
+                                                <div>Air Temp: <b>{selectedReportModal.weather?.airTemp || 'N/A'}°F</b></div>
+                                                <div>Sky: <b>{selectedReportModal.weather?.skyCover}</b></div>
+                                                <div>Wind: <b>{selectedReportModal.weather?.windSpeed}</b></div>
+                                            </div>
+
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono p-3 rounded-lg bg-[#0B132B] border border-[#3A506B]">
+                                                <div>General GPS: <b>{selectedReportModal.lat !== 0 ? '✓ Recorded' : 'Not Set'}</b></div>
+                                                <div>Pit GPS: <b>{selectedReportModal.pitLat && selectedReportModal.pitLat !== 0 ? '✓ Recorded' : 'Not Set'}</b></div>
+                                            </div>
+
+                                            {selectedReportModal.layers && selectedReportModal.layers.length > 0 && (
+                                                <div className="space-y-2">
+                                                    <h3 className="text-xs font-bold uppercase text-cyan-400">Pit Stratigraphy Layers</h3>
+                                                    <div className="space-y-1">
+                                                        {selectedReportModal.layers.map((l, i) => (
+                                                            <div key={i} className="flex justify-between text-xs font-mono p-2 rounded bg-[#0B132B] border border-[#3A506B]">
+                                                                <span>Depth: {l.topDepth}-{l.bottomDepth}cm</span>
+                                                                <span>Hardness: <b>{l.hardness}</b></span>
+                                                                <span>Grain: <b>{l.grainType || '—'}</b> ({l.grainSize}mm)</span>
                                                             </div>
                                                         ))}
                                                     </div>
                                                 </div>
                                             )}
 
-                                            {item.snowTemps && item.snowTemps.length > 0 && (
-                                                <div className="text-[11px] font-mono font-bold text-amber-500">
-                                                    Temperatures: {item.snowTemps.map(t => `${t.depth}cm (${t.temp}°C)`).join(', ')}
+                                            {selectedReportModal.instability?.avalanches && selectedReportModal.instability.avalanches.length > 0 && (
+                                                <div className="space-y-2">
+                                                    <h3 className="text-xs font-bold uppercase text-red-400">Avalanches Recorded ({selectedReportModal.instability.avalanches.length})</h3>
+                                                    {selectedReportModal.instability.avalanches.map((av, avIdx) => (
+                                                        <div key={avIdx} className="text-xs font-mono p-2.5 rounded bg-[#0B132B] border border-red-900/50 space-y-1">
+                                                            <div className="font-bold text-red-300">Avalanche #{avIdx+1}: {av.size} / {av.rScale} ({av.problemType || 'Unspecified'})</div>
+                                                            <div>Trigger: {av.trigger} | Elev: {av.elevation}ft ({av.aspect}) | Timeframe: {av.timeFrame}</div>
+                                                        </div>
+                                                    ))}
                                                 </div>
                                             )}
-                                            {item.layers.some(l => l.stabilityTest) && (
-                                                <div className="text-[11px] font-mono font-bold text-emerald-500">
-                                                    Stability Tests: {item.layers.filter(l => l.stabilityTest).map(l => `${l.topDepth}cm (${l.stabilityTest})`).join(', ')}
+
+                                            {selectedReportModal.snowTemps && selectedReportModal.snowTemps.length > 0 && (
+                                                <div className="space-y-1">
+                                                    <h3 className="text-xs font-bold uppercase text-amber-400">Snow Temperature Profile</h3>
+                                                    <div className="text-xs font-mono p-2 rounded bg-[#0B132B] border border-[#3A506B]">
+                                                        {selectedReportModal.snowTemps.map(t => `${t.depth}cm: ${t.temp}°C`).join(' | ')}
+                                                    </div>
                                                 </div>
                                             )}
-                                            {item.pstTests && item.pstTests.length > 0 && (
-                                                <div className="text-[11px] font-mono font-bold text-cyan-400">
-                                                    PST Tests: {item.pstTests.map(p => `${p.depth}cm: ${p.result}`).join(' | ')}
+
+                                            {selectedReportModal.pstTests && selectedReportModal.pstTests.length > 0 && (
+                                                <div className="space-y-1">
+                                                    <h3 className="text-xs font-bold uppercase text-cyan-400">Propagation Saw Tests (PST)</h3>
+                                                    <div className="text-xs font-mono p-2 rounded bg-[#0B132B] border border-[#3A506B]">
+                                                        {selectedReportModal.pstTests.map(p => `${p.depth}cm: ${p.result}`).join(' | ')}
+                                                    </div>
                                                 </div>
                                             )}
-                                            {item.generalNotes && <p className="italic border-t border-[#3A506B] pt-1 mt-1 solar-border">"{item.generalNotes}"</p>}
+
+                                            <div className="flex justify-between items-center border-t border-[#3A506B] pt-4">
+                                                <button onClick={() => deleteRecord(selectedReportModal.id)} className="bg-red-600 hover:bg-red-700 text-white text-xs px-3 py-1.5 rounded font-bold">
+                                                    Delete Observation
+                                                </button>
+                                                <button onClick={() => loadRecordToActiveSession(selectedReportModal)} className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs px-4 py-1.5 rounded font-bold">
+                                                    Load into Workspace
+                                                </button>
+                                            </div>
                                         </div>
-                                    ))
+                                    </div>
                                 )}
                             </div>
                         )}
@@ -1402,22 +1608,16 @@
                     </main>
 
                     <footer className={`px-3 py-2.5 flex justify-between items-center text-xs solar-header ${isBright ? 'bg-[#0F172A] text-white border-t-2 border-black' : 'bg-[#0B132B] border-t border-[#3A506B]'}`}>
-                        <span className="font-mono text-[11px] text-cyan-300 font-bold">GPS: {obs.lat !== 0 || obs.lng !== 0 ? `${obs.lat.toFixed(3)}, ${obs.lng.toFixed(3)}` : 'Not Set'}</span>
-                        <span className="italic text-[11px] font-bold text-slate-300">SnowSlate Suite v1.03</span>
+                        <span className="font-mono text-[11px] text-cyan-300 font-bold">
+                            Gen GPS: {obs.lat !== 0 || obs.lng !== 0 ? 'Recorded' : 'Not Set'} | Pit GPS: {obs.pitLat && obs.pitLat !== 0 ? 'Recorded' : 'Not Set'}
+                        </span>
+                        <span className="italic text-[11px] font-bold text-slate-300">SnowSlate Suite v1.14</span>
                     </footer>
                 </div>
             );
         }
 
         ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('./sw.js')
-                    .then(reg => console.log('SW registered:', reg))
-                    .catch(err => console.log('SW failed:', err));
-            });
-        }
     </script>
 </body>
 </html>
