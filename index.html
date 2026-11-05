@@ -164,15 +164,58 @@
             const [filterTag, setFilterTag] = useState('all');
             const [selectedReportModal, setSelectedReportModal] = useState(null);
 
-            useEffect(() => {
-                const storedLogs = localStorage.getItem('snowslate_logbook');
-                if (storedLogs) {
+            // Native Capacitor SQLite Implementation
+            const initCapacitorSqlite = async () => {
+                if (window.Capacitor && window.Capacitor.isNativePlatform() && window.CapacitorSQLite) {
                     try {
-                        setSavedLogbook(JSON.parse(storedLogs));
+                        const sqlite = window.CapacitorSQLite;
+                        const db = await sqlite.createConnection({
+                            database: 'snowslate.db',
+                            encrypted: false,
+                            mode: 'no-encryption',
+                            version: 1,
+                            readonly: false
+                        });
+                        await db.open();
+                        await db.execute(`
+                            CREATE TABLE IF NOT EXISTS logbook (
+                                id TEXT PRIMARY KEY NOT NULL,
+                                createdAt TEXT,
+                                data TEXT
+                            );
+                        `);
+                        return db;
                     } catch (e) {
-                        console.error('Failed to parse logbook from localStorage', e);
+                        console.error('Capacitor SQLite init error:', e);
                     }
                 }
+                return null;
+            };
+
+            useEffect(() => {
+                const loadLogs = async () => {
+                    const db = await initCapacitorSqlite();
+                    if (db) {
+                        try {
+                            const result = await db.query('SELECT data FROM logbook ORDER BY createdAt DESC;');
+                            const logs = result.values ? result.values.map(row => JSON.parse(row.data)) : [];
+                            setSavedLogbook(logs);
+                            return;
+                        } catch (e) {
+                            console.error('Failed to load from native SQLite, falling back to localStorage', e);
+                        }
+                    }
+                    // Fallback to localStorage for web/PWA mode
+                    const storedLogs = localStorage.getItem('snowslate_logbook');
+                    if (storedLogs) {
+                        try {
+                            setSavedLogbook(JSON.parse(storedLogs));
+                        } catch (e) {
+                            console.error('Failed to parse logbook from localStorage', e);
+                        }
+                    }
+                };
+                loadLogs();
             }, []);
 
             useEffect(() => {
@@ -183,8 +226,37 @@
                 }
             }, [colorPalette]);
 
-            const saveLogbookToStorage = (newLogs) => {
+            const saveLogbookToStorage = async (newLogs) => {
                 setSavedLogbook(newLogs);
+                const db = await initCapacitorSqlite();
+                if (db) {
+                    try {
+                        for (const item of newLogs) {
+                            await db.run(
+                                'INSERT OR REPLACE INTO logbook (id, createdAt, data) VALUES (?, ?, ?);',
+                                [item.id, item.createdAt, JSON.stringify(item)]
+                            );
+                        }
+                        return;
+                    } catch (e) {
+                        console.error('Failed to save to native SQLite, falling back to localStorage', e);
+                    }
+                }
+                localStorage.setItem('snowslate_logbook', JSON.stringify(newLogs));
+            };
+
+            const deleteLogFromStorage = async (id) => {
+                const newLogs = savedLogbook.filter(item => item.id !== id);
+                setSavedLogbook(newLogs);
+                const db = await initCapacitorSqlite();
+                if (db) {
+                    try {
+                        await db.run('DELETE FROM logbook WHERE id = ?;', [id]);
+                        return;
+                    } catch (e) {
+                        console.error('Failed to delete from native SQLite', e);
+                    }
+                }
                 localStorage.setItem('snowslate_logbook', JSON.stringify(newLogs));
             };
 
@@ -609,8 +681,7 @@
 
             const deleteRecord = (id) => {
                 if (confirm('Are you sure you want to delete this observation log?')) {
-                    const newLogs = savedLogbook.filter(item => item.id !== id);
-                    saveLogbookToStorage(newLogs);
+                    deleteLogFromStorage(id);
                     if (selectedReportModal?.id === id) setSelectedReportModal(null);
                     setStatusMsg('Observation deleted.');
                     setTimeout(() => setStatusMsg(''), 2500);
